@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import initSqlJs from 'sql.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import fs from 'fs';
 
 dotenv.config();
 const app = express();
@@ -13,12 +14,23 @@ app.use(express.json());
 let db;
 let SQL;
 
+const DB_FILE = './database.db';
+
 async function initDB() {
   SQL = await initSqlJs();
   
-  db = new SQL.Database();
+  // Load existing database if it exists
+  let dbBuffer = null;
+  if (fs.existsSync(DB_FILE)) {
+    dbBuffer = fs.readFileSync(DB_FILE);
+    console.log('✅ Loaded existing database');
+  } else {
+    console.log('📁 Creating new database file');
+  }
   
-  // Create users table with account numbers
+  db = new SQL.Database(dbBuffer);
+  
+  // Create tables
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +62,22 @@ async function initDB() {
     )
   `);
   
+  // Save function
+  function saveDB() {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_FILE, buffer);
+    console.log('💾 Database saved to disk');
+  }
+  
+  // Wrap db.run to auto-save after changes
+  const originalRun = db.run.bind(db);
+  db.run = (sql, params) => {
+    const result = originalRun(sql, params);
+    saveDB();
+    return result;
+  };
+  
   // Check if admin exists, if not create one
   const checkAdmin = db.exec("SELECT * FROM users WHERE username = 'admin'");
   if (checkAdmin.length === 0 || checkAdmin[0].values.length === 0) {
@@ -60,6 +88,7 @@ async function initDB() {
   }
   
   console.log('✅ Database ready');
+  return db;
 }
 
 // Helper functions
@@ -187,7 +216,7 @@ app.post('/api/transfer/internal', async (req, res) => {
   }
 });
 
-// Admin: Add user (with account numbers)
+// Admin: Add user
 app.post('/api/admin/users', async (req, res) => {
   const { username, password, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, checking_account_number, savings_account_number, credit_account_number } = req.body;
   const hash = bcrypt.hashSync(password, 10);
@@ -204,7 +233,7 @@ app.get('/api/admin/users', async (req, res) => {
   res.json(users);
 });
 
-// Admin: Update user balance or account numbers
+// Admin: Update user
 app.put('/api/admin/users/:id', async (req, res) => {
   const { checking_balance, savings_balance, credit_card_balance, is_active, checking_account_number, savings_account_number, credit_account_number } = req.body;
   
