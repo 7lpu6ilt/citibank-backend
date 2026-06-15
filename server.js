@@ -16,10 +16,9 @@ let SQL;
 async function initDB() {
   SQL = await initSqlJs();
   
-  // Create new in-memory database
   db = new SQL.Database();
   
-  // Create tables
+  // Create users table with account numbers
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,18 +47,6 @@ async function initDB() {
       ip_address TEXT,
       success INTEGER,
       failure_reason TEXT
-    )
-  `);
-  
-  db.run(`
-    CREATE TABLE IF NOT EXISTS transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      from_account TEXT,
-      to_account TEXT,
-      amount REAL NOT NULL,
-      description TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
   
@@ -105,7 +92,6 @@ function dbRun(sql, params = []) {
   stmt.free();
 }
 
-// Initialize database
 await initDB();
 
 // Login endpoint
@@ -146,9 +132,9 @@ app.post('/api/auth/login', async (req, res) => {
       savings_balance: user.savings_balance,
       credit_card_balance: user.credit_card_balance,
       credit_limit: user.credit_limit,
-      checking_account_number: user.checking_account_number,
-      savings_account_number: user.savings_account_number,
-      credit_account_number: user.credit_account_number
+      checking_account_number: user.checking_account_number || '4832',
+      savings_account_number: user.savings_account_number || '9182',
+      credit_account_number: user.credit_account_number || '2345'
     }
   });
 });
@@ -201,13 +187,14 @@ app.post('/api/transfer/internal', async (req, res) => {
   }
 });
 
-// Admin: Add user
+// Admin: Add user (with account numbers)
 app.post('/api/admin/users', async (req, res) => {
   const { username, password, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, checking_account_number, savings_account_number, credit_account_number } = req.body;
   const hash = bcrypt.hashSync(password, 10);
   dbRun(`INSERT INTO users (username, password_hash, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, checking_account_number, savings_account_number, credit_account_number)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [username, hash, full_name, checking_balance || 0, savings_balance || 0, credit_card_balance || 0, credit_limit || 5000, checking_account_number || '4832', savings_account_number || '9182', credit_account_number || '2345']);
+    [username, hash, full_name, checking_balance || 0, savings_balance || 0, credit_card_balance || 0, credit_limit || 5000, 
+     checking_account_number || '4832', savings_account_number || '9182', credit_account_number || '2345']);
   res.json({ success: true });
 });
 
@@ -217,9 +204,10 @@ app.get('/api/admin/users', async (req, res) => {
   res.json(users);
 });
 
-// Admin: Update user balance
+// Admin: Update user balance or account numbers
 app.put('/api/admin/users/:id', async (req, res) => {
-  const { checking_balance, savings_balance, credit_card_balance, is_active } = req.body;
+  const { checking_balance, savings_balance, credit_card_balance, is_active, checking_account_number, savings_account_number, credit_account_number } = req.body;
+  
   if (checking_balance !== undefined) {
     dbRun('UPDATE users SET checking_balance = ? WHERE id = ?', [checking_balance, req.params.id]);
   }
@@ -232,12 +220,6 @@ app.put('/api/admin/users/:id', async (req, res) => {
   if (is_active !== undefined) {
     dbRun('UPDATE users SET is_active = ? WHERE id = ?', [is_active, req.params.id]);
   }
-  res.json({ success: true });
-});
-
-// Admin: Update account numbers
-app.put('/api/admin/users/:id/account-numbers', async (req, res) => {
-  const { checking_account_number, savings_account_number, credit_account_number } = req.body;
   if (checking_account_number !== undefined) {
     dbRun('UPDATE users SET checking_account_number = ? WHERE id = ?', [checking_account_number, req.params.id]);
   }
@@ -247,6 +229,7 @@ app.put('/api/admin/users/:id/account-numbers', async (req, res) => {
   if (credit_account_number !== undefined) {
     dbRun('UPDATE users SET credit_account_number = ? WHERE id = ?', [credit_account_number, req.params.id]);
   }
+  
   res.json({ success: true });
 });
 
