@@ -25,21 +25,24 @@ async function initDB() {
   
   // Create tables
   db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      full_name TEXT,
-      checking_balance REAL DEFAULT 0,
-      savings_balance REAL DEFAULT 0,
-      credit_card_balance REAL DEFAULT 0,
-      credit_limit REAL DEFAULT 5000,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      last_login_at DATETIME,
-      last_login_ip TEXT
-    )
-  `);
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    full_name TEXT,
+    checking_balance REAL DEFAULT 0,
+    savings_balance REAL DEFAULT 0,
+    credit_card_balance REAL DEFAULT 0,
+    credit_limit REAL DEFAULT 5000,
+    checking_account_number TEXT DEFAULT '4832',
+    savings_account_number TEXT DEFAULT '9182',
+    credit_account_number TEXT DEFAULT '2345',
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_login_at DATETIME,
+    last_login_ip TEXT
+  )
+`);
   
   db.run(`
     CREATE TABLE IF NOT EXISTS login_attempts (
@@ -230,9 +233,20 @@ app.post('/api/admin/users', async (req, res) => {
 });
 
 // Admin: Get all users
-app.get('/api/admin/users', async (req, res) => {
-  const users = dbAll('SELECT id, username, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, is_active FROM users');
-  res.json(users);
+app.get('/api/user/me', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token' });
+  
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secretkey');
+    const user = dbGet(`SELECT id, username, full_name, checking_balance, savings_balance, 
+                        credit_card_balance, credit_limit, is_active, last_login_at,
+                        checking_account_number, savings_account_number, credit_account_number 
+                        FROM users WHERE id = ?`, [decoded.userId]);
+    res.json(user);
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
 });
 
 // Admin: Update user
@@ -251,6 +265,32 @@ app.put('/api/admin/users/:id', async (req, res) => {
     dbRun('UPDATE users SET is_active = ? WHERE id = ?', [is_active, req.params.id]);
   }
   res.json({ success: true });
+});
+
+// Admin: Update account numbers
+app.put('/api/admin/users/:id/account-numbers', async (req, res) => {
+  const { checking_account_number, savings_account_number, credit_account_number } = req.body;
+  const token = req.headers.authorization?.split(' ')[1];
+  
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secretkey');
+    if (decoded.username !== 'admin') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    
+    if (checking_account_number) {
+      dbRun('UPDATE users SET checking_account_number = ? WHERE id = ?', [checking_account_number, req.params.id]);
+    }
+    if (savings_account_number) {
+      dbRun('UPDATE users SET savings_account_number = ? WHERE id = ?', [savings_account_number, req.params.id]);
+    }
+    if (credit_account_number) {
+      dbRun('UPDATE users SET credit_account_number = ? WHERE id = ?', [credit_account_number, req.params.id]);
+    }
+    res.json({ success: true });
+  } catch {
+    res.status(401).json({ error: 'Unauthorized' });
+  }
 });
 
 // Admin: Delete user
