@@ -4,7 +4,6 @@ import dotenv from 'dotenv';
 import initSqlJs from 'sql.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import fs from 'fs';
 
 dotenv.config();
 const app = express();
@@ -12,37 +11,34 @@ app.use(cors());
 app.use(express.json());
 
 let db;
+let SQL;
 
 async function initDB() {
-  // Load existing database or create new one
-  let dbBuffer = null;
-  if (fs.existsSync('./database.db')) {
-    dbBuffer = fs.readFileSync('./database.db');
-  }
+  SQL = await initSqlJs();
   
-  const SQL = await initSqlJs();
-  db = new SQL.Database(dbBuffer);
+  // Create new in-memory database
+  db = new SQL.Database();
   
   // Create tables
   db.run(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    full_name TEXT,
-    checking_balance REAL DEFAULT 0,
-    savings_balance REAL DEFAULT 0,
-    credit_card_balance REAL DEFAULT 0,
-    credit_limit REAL DEFAULT 5000,
-    checking_account_number TEXT DEFAULT '4832',
-    savings_account_number TEXT DEFAULT '9182',
-    credit_account_number TEXT DEFAULT '2345',
-    is_active INTEGER DEFAULT 1,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_login_at DATETIME,
-    last_login_ip TEXT
-  )
-`);
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      full_name TEXT,
+      checking_balance REAL DEFAULT 0,
+      savings_balance REAL DEFAULT 0,
+      credit_card_balance REAL DEFAULT 0,
+      credit_limit REAL DEFAULT 5000,
+      checking_account_number TEXT DEFAULT '4832',
+      savings_account_number TEXT DEFAULT '9182',
+      credit_account_number TEXT DEFAULT '2345',
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_login_at DATETIME,
+      last_login_ip TEXT
+    )
+  `);
   
   db.run(`
     CREATE TABLE IF NOT EXISTS login_attempts (
@@ -67,39 +63,19 @@ async function initDB() {
     )
   `);
   
-  db.run(`
-    CREATE TABLE IF NOT EXISTS external_transfers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      from_account TEXT,
-      amount REAL NOT NULL,
-      recipient_name TEXT,
-      recipient_account TEXT,
-      status TEXT DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  
-  // Save database to file after changes
-  const saveDB = () => {
-    const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync('./database.db', buffer);
-  };
-  
-  // Wrap db.exec to auto-save after write operations
-  const originalRun = db.run.bind(db);
-  db.run = (sql, params) => {
-    const result = originalRun(sql, params);
-    saveDB();
-    return result;
-  };
+  // Check if admin exists, if not create one
+  const checkAdmin = db.exec("SELECT * FROM users WHERE username = 'admin'");
+  if (checkAdmin.length === 0 || checkAdmin[0].values.length === 0) {
+    const adminHash = bcrypt.hashSync('admin123', 10);
+    db.run(`INSERT INTO users (username, password_hash, full_name, checking_balance, savings_balance, credit_limit, is_active)
+            VALUES ('admin', ?, 'Administrator', 5000, 2000, 10000, 1)`, [adminHash]);
+    console.log('✅ Admin user created automatically');
+  }
   
   console.log('✅ Database ready');
-  return db;
 }
 
-// Helper to get all rows
+// Helper functions
 function dbAll(sql, params = []) {
   const stmt = db.prepare(sql);
   stmt.bind(params);
@@ -127,9 +103,6 @@ function dbRun(sql, params = []) {
   stmt.bind(params);
   stmt.step();
   stmt.free();
-  // Save after each write
-  const data = db.export();
-  fs.writeFileSync('./database.db', Buffer.from(data));
 }
 
 // Initialize database
@@ -172,7 +145,10 @@ app.post('/api/auth/login', async (req, res) => {
       checking_balance: user.checking_balance,
       savings_balance: user.savings_balance,
       credit_card_balance: user.credit_card_balance,
-      credit_limit: user.credit_limit
+      credit_limit: user.credit_limit,
+      checking_account_number: user.checking_account_number,
+      savings_account_number: user.savings_account_number,
+      credit_account_number: user.credit_account_number
     }
   });
 });
@@ -184,7 +160,10 @@ app.get('/api/user/me', async (req, res) => {
   
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secretkey');
-    const user = dbGet('SELECT id, username, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, is_active, last_login_at FROM users WHERE id = ?', [decoded.userId]);
+    const user = dbGet(`SELECT id, username, full_name, checking_balance, savings_balance, 
+                        credit_card_balance, credit_limit, is_active, last_login_at,
+                        checking_account_number, savings_account_number, credit_account_number 
+                        FROM users WHERE id = ?`, [decoded.userId]);
     res.json(user);
   } catch {
     res.status(401).json({ error: 'Invalid token' });
@@ -224,32 +203,21 @@ app.post('/api/transfer/internal', async (req, res) => {
 
 // Admin: Add user
 app.post('/api/admin/users', async (req, res) => {
-  const { username, password, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit } = req.body;
+  const { username, password, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, checking_account_number, savings_account_number, credit_account_number } = req.body;
   const hash = bcrypt.hashSync(password, 10);
-  dbRun(`INSERT INTO users (username, password_hash, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [username, hash, full_name, checking_balance || 0, savings_balance || 0, credit_card_balance || 0, credit_limit || 5000]);
+  dbRun(`INSERT INTO users (username, password_hash, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, checking_account_number, savings_account_number, credit_account_number)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [username, hash, full_name, checking_balance || 0, savings_balance || 0, credit_card_balance || 0, credit_limit || 5000, checking_account_number || '4832', savings_account_number || '9182', credit_account_number || '2345']);
   res.json({ success: true });
 });
 
 // Admin: Get all users
-app.get('/api/user/me', async (req, res) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token' });
-  
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secretkey');
-    const user = dbGet(`SELECT id, username, full_name, checking_balance, savings_balance, 
-                        credit_card_balance, credit_limit, is_active, last_login_at,
-                        checking_account_number, savings_account_number, credit_account_number 
-                        FROM users WHERE id = ?`, [decoded.userId]);
-    res.json(user);
-  } catch {
-    res.status(401).json({ error: 'Invalid token' });
-  }
+app.get('/api/admin/users', async (req, res) => {
+  const users = dbAll('SELECT id, username, full_name, checking_balance, savings_balance, credit_card_balance, credit_limit, is_active, checking_account_number, savings_account_number, credit_account_number FROM users');
+  res.json(users);
 });
 
-// Admin: Update user
+// Admin: Update user balance
 app.put('/api/admin/users/:id', async (req, res) => {
   const { checking_balance, savings_balance, credit_card_balance, is_active } = req.body;
   if (checking_balance !== undefined) {
@@ -270,27 +238,16 @@ app.put('/api/admin/users/:id', async (req, res) => {
 // Admin: Update account numbers
 app.put('/api/admin/users/:id/account-numbers', async (req, res) => {
   const { checking_account_number, savings_account_number, credit_account_number } = req.body;
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secretkey');
-    if (decoded.username !== 'admin') {
-      return res.status(403).json({ error: 'Admin only' });
-    }
-    
-    if (checking_account_number) {
-      dbRun('UPDATE users SET checking_account_number = ? WHERE id = ?', [checking_account_number, req.params.id]);
-    }
-    if (savings_account_number) {
-      dbRun('UPDATE users SET savings_account_number = ? WHERE id = ?', [savings_account_number, req.params.id]);
-    }
-    if (credit_account_number) {
-      dbRun('UPDATE users SET credit_account_number = ? WHERE id = ?', [credit_account_number, req.params.id]);
-    }
-    res.json({ success: true });
-  } catch {
-    res.status(401).json({ error: 'Unauthorized' });
+  if (checking_account_number !== undefined) {
+    dbRun('UPDATE users SET checking_account_number = ? WHERE id = ?', [checking_account_number, req.params.id]);
   }
+  if (savings_account_number !== undefined) {
+    dbRun('UPDATE users SET savings_account_number = ? WHERE id = ?', [savings_account_number, req.params.id]);
+  }
+  if (credit_account_number !== undefined) {
+    dbRun('UPDATE users SET credit_account_number = ? WHERE id = ?', [credit_account_number, req.params.id]);
+  }
+  res.json({ success: true });
 });
 
 // Admin: Delete user
@@ -305,5 +262,10 @@ app.get('/api/admin/login-logs', async (req, res) => {
   res.json(logs);
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
